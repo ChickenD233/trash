@@ -113,7 +113,6 @@
 <script>
 // ========== Blynk 配置 ==========
 const BLYNK_TOKEN = "9MllL6xn78oKfI7jtkaedxNsllsMisW3";
-const BLYNK_URL   = "https://blynk.cloud/external/api/update?token=" + BLYNK_TOKEN + "&V0=";
 // V0 = 虚拟引脚，candy→发"candy"，gourd→发"gourd"
 
 // ========== Teachable Machine 模型地址 ==========
@@ -217,7 +216,7 @@ async function loop() {
 
 // 发送指令到 Blynk（HTTPS，不会被拦截）
 async function sendCommand(cmd) {
-  const url = BLYNK_URL + cmd;
+  const url = "https://blynk.cloud/external/api/update?token=" + BLYNK_TOKEN + "&V0=" + encodeURIComponent(cmd);
   addLog("→ Blynk: " + cmd.toUpperCase());
   try {
     const r = await fetch(url, { signal: AbortSignal.timeout(5000) });
