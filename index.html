@@ -1,44 +1,247 @@
-#define BLYNK_TEMPLATE_ID   "TMPL6Z3g_F4Xb"
-#define BLYNK_TEMPLATE_NAME "GarbageSort"
-#define BLYNK_AUTH_TOKEN    "9MllL6xn78oKfI7jtkaedxNsllsMisW3"
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>🗑 垃圾分拣识别</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js"></script>
+<style>
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
+  .pulse { animation: pulse 1.5s infinite; }
+  #webcam-container canvas {
+    border-radius: 16px;
+    width: 100% !important;
+    max-width: 400px;
+    height: auto !important;
+  }
+</style>
+</head>
+<body class="bg-gray-950 text-white min-h-screen flex flex-col items-center px-4 py-6">
 
-#include <WiFi.h>
-#include <BlynkSimpleEsp32.h>
+  <!-- 标题 -->
+  <h1 class="text-2xl font-bold tracking-wide mb-2">🗑 智能垃圾分拣</h1>
+  <p class="text-gray-500 text-sm mb-4">Teachable Machine + ESP32-C6 + Blynk</p>
 
-#define WIFI_SSID  "DomyWifi_Wi-Fi5"
-#define WIFI_PASS  "FuxueW200798yd"
+  <!-- 启动按钮 -->
+  <button id="start-btn" onclick="init()"
+    class="bg-blue-600 hover:bg-blue-700 text-white font-semibold text-lg px-8 py-3 rounded-xl shadow-lg transition mb-4">
+    📷 启动摄像头识别
+  </button>
 
-#define LED_CANDY  10   // 糖果 → GPIO10 (D10)
-#define LED_GOURD   9   // 葫芦 → GPIO9  (D9)
+  <!-- 摄像头画面 -->
+  <div id="webcam-container" class="mb-3"></div>
 
-// 网页通过 Blynk API 写入 V0，ESP32 在这里接收
-BLYNK_WRITE(V0) {
-  String cmd = param.asStr();
-  Serial.println("收到指令: " + cmd);
+  <!-- 状态 -->
+  <div id="status" class="text-gray-400 text-sm mb-3">等待启动...</div>
 
-  if (cmd == "candy") {
-    digitalWrite(LED_CANDY, HIGH);
-    digitalWrite(LED_GOURD, LOW);
-    Serial.println("→ 糖果 LED 亮");
-  } else if (cmd == "gourd") {
-    digitalWrite(LED_CANDY, LOW);
-    digitalWrite(LED_GOURD, HIGH);
-    Serial.println("→ 葫芦 LED 亮");
+  <!-- 识别结果 -->
+  <div id="result-box" class="mb-4 px-8 py-4 rounded-2xl text-3xl font-bold bg-gray-800 text-gray-600 min-w-48 text-center transition-all duration-300">
+    —
+  </div>
+
+  <!-- 置信度条 -->
+  <div class="w-full max-w-sm space-y-2 mb-4">
+    <div>
+      <div class="flex justify-between text-sm text-gray-400 mb-1">
+        <span>🍬 糖果</span><span id="pct-candy">0%</span>
+      </div>
+      <div class="bg-gray-800 rounded-full h-3 overflow-hidden">
+        <div id="bar-candy" class="h-full bg-green-500 rounded-full transition-all duration-200" style="width:0%"></div>
+      </div>
+    </div>
+    <div>
+      <div class="flex justify-between text-sm text-gray-400 mb-1">
+        <span>🫙 葫芦</span><span id="pct-gourd">0%</span>
+      </div>
+      <div class="bg-gray-800 rounded-full h-3 overflow-hidden">
+        <div id="bar-gourd" class="h-full bg-blue-500 rounded-full transition-all duration-200" style="width:0%"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 控制面板 -->
+  <div class="w-full max-w-sm mb-4">
+    <div class="flex gap-2 justify-center">
+      <button onclick="sendCommand('candy')" class="bg-green-700 hover:bg-green-600 px-4 py-2 rounded-lg text-sm transition">
+        手动：糖果
+      </button>
+      <button onclick="sendCommand('gourd')" class="bg-blue-700 hover:bg-blue-600 px-4 py-2 rounded-lg text-sm transition">
+        手动：葫芦
+      </button>
+    </div>
+  </div>
+
+  <!-- 设置区 -->
+  <div class="w-full max-w-sm bg-gray-900 rounded-xl p-4 mb-4">
+    <h3 class="text-sm font-semibold text-gray-300 mb-3">⚙ 参数设置</h3>
+    <div class="grid grid-cols-2 gap-3">
+      <div>
+        <label class="text-xs text-gray-500">置信度阈值</label>
+        <input id="threshold" type="range" min="50" max="99" value="80" oninput="updateSettings()"
+          class="w-full accent-blue-500">
+        <div class="text-xs text-gray-400 text-center" id="threshold-val">80%</div>
+      </div>
+      <div>
+        <label class="text-xs text-gray-500">指令冷却(秒)</label>
+        <input id="cooldown" type="range" min="1" max="10" value="2" oninput="updateSettings()"
+          class="w-full accent-blue-500">
+        <div class="text-xs text-gray-400 text-center" id="cooldown-val">2秒</div>
+      </div>
+    </div>
+    <div class="flex items-center gap-2 mt-3">
+      <input id="auto-mode" type="checkbox" checked class="accent-blue-500">
+      <label class="text-xs text-gray-400">自动发送指令</label>
+    </div>
+  </div>
+
+  <!-- 日志 -->
+  <div class="w-full max-w-sm">
+    <div class="flex justify-between items-center mb-1">
+      <span class="text-xs text-gray-600">📋 指令日志</span>
+      <button onclick="clearLog()" class="text-xs text-gray-700 hover:text-gray-400">清空</button>
+    </div>
+    <div id="log" class="bg-gray-900 rounded-lg p-3 text-xs text-gray-500 max-h-32 overflow-y-auto font-mono">
+      等待操作...
+    </div>
+  </div>
+
+  <!-- 底部 -->
+  <p class="text-gray-700 text-xs mt-6">手机浏览器打开 · 需要摄像头权限</p>
+
+<script>
+// ========== Blynk 配置 ==========
+const BLYNK_TOKEN = "9MllL6xn78oKfI7jtkaedxNsllsMisW3";
+const BLYNK_URL   = "https://blynk.cloud/external/api/update?token=" + BLYNK_TOKEN + "&V0=";
+// V0 = 虚拟引脚，candy→发"candy"，gourd→发"gourd"
+
+// ========== Teachable Machine 模型地址 ==========
+const MODEL_URL = "https://teachablemachine.withgoogle.com/models/LTCKvE1GW/";
+
+let threshold = 0.80;
+let cooldown  = 2000;
+let model, webcam, lastSent = 0, running = false;
+
+function updateSettings() {
+  threshold = document.getElementById("threshold").value / 100;
+  cooldown  = document.getElementById("cooldown").value * 1000;
+  document.getElementById("threshold-val").textContent = Math.round(threshold * 100) + "%";
+  document.getElementById("cooldown-val").textContent  = (cooldown / 1000) + "秒";
+}
+
+// 启动摄像头和模型
+async function init() {
+  const btn    = document.getElementById("start-btn");
+  const status = document.getElementById("status");
+  btn.textContent = "加载中...";
+  btn.disabled = true;
+  btn.className = "bg-gray-700 text-gray-400 font-semibold text-lg px-8 py-3 rounded-xl shadow-lg mb-4 cursor-not-allowed";
+
+  try {
+    status.textContent = "加载模型中...";
+    status.className = "text-yellow-400 text-sm mb-3 pulse";
+    model = await tmImage.load(MODEL_URL + "model.json", MODEL_URL + "metadata.json");
+    addLog("模型加载完成，类别: " + model.getClassLabels().join(", "));
+
+    status.textContent = "启动摄像头...";
+    webcam = new tmImage.Webcam(300, 300, true);
+    await webcam.setup({ facingMode: "environment" });
+    await webcam.play();
+    document.getElementById("webcam-container").appendChild(webcam.canvas);
+
+    btn.style.display = "none";
+    status.textContent = "🟢 实时识别中";
+    status.className = "text-green-400 text-sm mb-3";
+    running = true;
+    addLog("摄像头已启动，开始识别");
+    loop();
+  } catch(e) {
+    status.textContent = "❌ 启动失败: " + e.message;
+    status.className = "text-red-400 text-sm mb-3";
+    addLog("错误: " + e.message);
+    btn.textContent = "📷 重试";
+    btn.disabled = false;
+    btn.className = "bg-blue-600 hover:bg-blue-700 text-white font-semibold text-lg px-8 py-3 rounded-xl shadow-lg transition mb-4";
   }
 }
 
-void setup() {
-  Serial.begin(115200);
+// 识别循环
+async function loop() {
+  if (!running) return;
+  webcam.update();
+  const preds = await model.predict(webcam.canvas);
 
-  pinMode(LED_CANDY, OUTPUT);
-  pinMode(LED_GOURD, OUTPUT);
-  digitalWrite(LED_CANDY, LOW);
-  digitalWrite(LED_GOURD, LOW);
+  let candyProb = 0, gourdProb = 0;
+  preds.forEach(p => {
+    const name = p.className.toLowerCase();
+    if (name.includes("candy") || name.includes("糖")) {
+      candyProb = p.probability;
+    } else {
+      gourdProb = p.probability;
+    }
+  });
 
-  Blynk.begin(BLYNK_AUTH_TOKEN, WIFI_SSID, WIFI_PASS);
-  Serial.println("Blynk 已连接");
+  const candyPct = Math.round(candyProb * 100);
+  const gourdPct = Math.round(gourdProb * 100);
+  document.getElementById("bar-candy").style.width = candyPct + "%";
+  document.getElementById("pct-candy").textContent  = candyPct + "%";
+  document.getElementById("bar-gourd").style.width = gourdPct + "%";
+  document.getElementById("pct-gourd").textContent  = gourdPct + "%";
+
+  const box  = document.getElementById("result-box");
+  const best = candyProb > gourdProb
+    ? { name: "candy", prob: candyProb, label: "🍬 糖果" }
+    : { name: "gourd", prob: gourdProb, label: "🫙 葫芦" };
+
+  if (best.prob >= threshold) {
+    box.className = best.name === "candy"
+      ? "mb-4 px-8 py-4 rounded-2xl text-3xl font-bold bg-green-900 text-green-300 min-w-48 text-center transition-all duration-300"
+      : "mb-4 px-8 py-4 rounded-2xl text-3xl font-bold bg-blue-900 text-blue-300 min-w-48 text-center transition-all duration-300";
+    box.textContent = best.label + " " + Math.round(best.prob * 100) + "%";
+
+    if (document.getElementById("auto-mode").checked) {
+      const now = Date.now();
+      if (now - lastSent > cooldown) {
+        lastSent = now;
+        sendCommand(best.name);
+      }
+    }
+  } else {
+    box.className = "mb-4 px-8 py-4 rounded-2xl text-3xl font-bold bg-gray-800 text-gray-600 min-w-48 text-center transition-all duration-300";
+    box.textContent = "识别中...";
+  }
+
+  requestAnimationFrame(loop);
 }
 
-void loop() {
-  Blynk.run();
+// 发送指令到 Blynk（HTTPS，不会被拦截）
+async function sendCommand(cmd) {
+  const url = BLYNK_URL + cmd;
+  addLog("→ Blynk: " + cmd.toUpperCase());
+  try {
+    const r = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    if (r.ok) {
+      addLog("✓ 已发送");
+    } else {
+      addLog("✗ 服务器返回: " + r.status);
+    }
+  } catch(e) {
+    addLog("✗ " + e.message);
+  }
 }
+
+function addLog(msg) {
+  const el   = document.getElementById("log");
+  const time = new Date().toLocaleTimeString();
+  if (el.textContent === "等待操作...") el.innerHTML = "";
+  el.innerHTML += '<div class="py-0.5">' + time + " " + msg + "</div>";
+  el.scrollTop = el.scrollHeight;
+}
+
+function clearLog() {
+  document.getElementById("log").innerHTML = '<div class="text-gray-700">日志已清空</div>';
+}
+</script>
+</body>
+</html>
